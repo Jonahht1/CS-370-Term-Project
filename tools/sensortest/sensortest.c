@@ -5,19 +5,25 @@
  * and cleanup, but one line request now covers every line in the sensor
  * table below, each with the bias and debounce its circuit needs.
  *
- * The two beams are mounted one above the other (beam_lo under beam_hi)
- * to tell human-sized from pet-sized activity; they are not used for
- * direction.
+ * The two beams will be mounted one above the other (beam_lo under
+ * beam_hi; not mounted yet) to tell human-sized from pet-sized activity;
+ * they are not used for direction.
  *
- * Every edge is printed with the sensor name and its new state. All lines
- * are inputs; no line is ever configured as an output.
+ * Every edge is printed with the sensor name and its new state, and the
+ * same line is appended to a log file (default events.log, or the path
+ * given as the only argument). The log is fsync'd after each batch of
+ * events; if opening, writing, or syncing it fails, the program exits
+ * with an error rather than keep running without saving events. All
+ * lines are inputs; no line is ever configured as an output.
  *
+ * Usage: sensortest [logfile]
  * Stop with Ctrl+C (SIGINT) or SIGTERM; all resources are released.
  * `make test` checks the applied line settings and a clean ASan exit.
  */
 #define _POSIX_C_SOURCE 200809L
 
 #include <errno.h>
+#include <fcntl.h>
 #include <gpiod.h>
 #include <poll.h>
 #include <signal.h>
@@ -27,11 +33,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 #define CHIP_PATH   "/dev/gpiochip0"  /* pinctrl-rp1 on the Pi 5 */
 #define CONSUMER    "sensortest"
 #define EVENT_BUF   16                /* edge events read per wakeup */
 #define POLL_MS     500               /* max wait before re-checking stop flag */
+#define DEFAULT_LOG "events.log"      /* relative to the current directory */
+#define LOG_LINE    256               /* max bytes in one formatted line */
 
 struct sensor {
 	const char *name;
@@ -60,6 +69,9 @@ static const struct sensor sensors[] = {
 
 static volatile sig_atomic_t stop_requested = 0;
 
+static const char *log_path = DEFAULT_LOG;
+static int log_fd = -1;
+
 static void on_signal(int signo)
 {
 	(void)signo;
@@ -76,29 +88,95 @@ static const struct sensor *sensor_by_offset(unsigned int offset)
 	return NULL;
 }
 
-/* Print local wall-clock time, e.g. "2026-10-14 09:30:01.123". */
-static void print_wall_time(void)
+/* Format local wall-clock time, e.g. "2026-10-14 09:30:01.123", into buf. */
+static void format_wall_time(char *buf, size_t size)
 {
 	struct timespec ts;
 	struct tm tm;
-	char buf[32];
+	char secs[32];
 
 	clock_gettime(CLOCK_REALTIME, &ts);
 	localtime_r(&ts.tv_sec, &tm);
-	strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", &tm);
-	printf("%s.%03ld", buf, ts.tv_nsec / 1000000L);
+	strftime(secs, sizeof(secs), "%Y-%m-%d %H:%M:%S", &tm);
+	snprintf(buf, size, "%s.%03ld", secs, ts.tv_nsec / 1000000L);
 }
 
-/* Print one sensor-state line. mono_ns is a CLOCK_MONOTONIC timestamp. */
-static void print_state(const struct sensor *s, const char *tag,
+/* Write all len bytes, retrying short writes. Returns 0 or -1 (errno set). */
+static int write_all(int fd, const char *buf, size_t len)
+{
+	while (len > 0) {
+		ssize_t n = write(fd, buf, len);
+
+		if (n < 0) {
+			if (errno == EINTR)
+				continue; /* interrupted before writing: retry */
+			return -1;
+		}
+		buf += n;
+		len -= (size_t)n;
+	}
+	return 0;
+}
+
+/*
+ * Send one formatted line to the terminal and append it to the log.
+ * The line is not on disk until sync_log() runs. Returns 0 or -1.
+ */
+static int output_line(const char *line, int len)
+{
+	if (len < 0 || len >= LOG_LINE) {
+		fprintf(stderr, "sensortest: log line too long\n");
+		return -1;
+	}
+	fputs(line, stdout);
+	fflush(stdout);
+	if (write_all(log_fd, line, (size_t)len) < 0) {
+		fprintf(stderr, "sensortest: write %s: %s\n", log_path,
+			strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+/* Block until everything written to the log is on disk. Returns 0 or -1. */
+static int sync_log(void)
+{
+	if (fsync(log_fd) < 0) {
+		fprintf(stderr, "sensortest: fsync %s: %s\n", log_path,
+			strerror(errno));
+		return -1;
+	}
+	return 0;
+}
+
+/* Record one sensor-state line. mono_ns is a CLOCK_MONOTONIC timestamp. */
+static int record_state(const struct sensor *s, const char *tag,
 			uint64_t mono_ns, int high)
 {
-	print_wall_time();
-	printf(" [mono %llu.%09llu] %-7s (GPIO%u) %-7s %s\n",
-	       (unsigned long long)(mono_ns / 1000000000ull),
-	       (unsigned long long)(mono_ns % 1000000000ull),
-	       s->name, s->offset, tag, high ? s->high_label : s->low_label);
-	fflush(stdout);
+	char wall[48];
+	char line[LOG_LINE];
+	int len;
+
+	format_wall_time(wall, sizeof(wall));
+	len = snprintf(line, sizeof(line),
+		       "%s [mono %llu.%09llu] %-7s (GPIO%u) %-7s %s\n", wall,
+		       (unsigned long long)(mono_ns / 1000000000ull),
+		       (unsigned long long)(mono_ns % 1000000000ull),
+		       s->name, s->offset, tag,
+		       high ? s->high_label : s->low_label);
+	return output_line(line, len);
+}
+
+/* Record a session marker such as "start" or "stop". */
+static int record_marker(const char *what)
+{
+	char wall[48];
+	char line[LOG_LINE];
+	int len;
+
+	format_wall_time(wall, sizeof(wall));
+	len = snprintf(line, sizeof(line), "%s sensortest %s\n", wall, what);
+	return output_line(line, len);
 }
 
 static uint64_t mono_now_ns(void)
@@ -152,7 +230,7 @@ static int add_sensor_lines(struct gpiod_line_config *line_cfg,
 	return 0;
 }
 
-/* Read and print every pending edge event. Returns 0 or -1 on error. */
+/* Record every pending edge event, then sync the log. Returns 0 or -1. */
 static int drain_events(struct gpiod_line_request *req,
 			struct gpiod_edge_event_buffer *buf)
 {
@@ -175,14 +253,16 @@ static int drain_events(struct gpiod_line_request *req,
 			fprintf(stderr, "event on unexpected line %u\n", offset);
 			continue;
 		}
-		print_state(s, rising ? "rising" : "falling",
-			    gpiod_edge_event_get_timestamp_ns(ev), rising);
+		if (record_state(s, rising ? "rising" : "falling",
+				 gpiod_edge_event_get_timestamp_ns(ev),
+				 rising) < 0)
+			return -1;
 	}
-	return 0;
+	return sync_log(); /* one fsync per batch, not per line */
 }
 
-/* Print the current level of every sensor. Returns 0 or -1 on error. */
-static int print_initial_states(struct gpiod_line_request *req)
+/* Record the current level of every sensor. Returns 0 or -1 on error. */
+static int record_initial_states(struct gpiod_line_request *req)
 {
 	uint64_t now = mono_now_ns();
 
@@ -195,12 +275,14 @@ static int print_initial_states(struct gpiod_line_request *req)
 			perror("gpiod_line_request_get_value");
 			return -1;
 		}
-		print_state(s, "initial", now, val == GPIOD_LINE_VALUE_ACTIVE);
+		if (record_state(s, "initial", now,
+				 val == GPIOD_LINE_VALUE_ACTIVE) < 0)
+			return -1;
 	}
 	return 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
 	struct gpiod_chip *chip = NULL;
 	struct gpiod_line_settings *settings = NULL;
@@ -210,8 +292,28 @@ int main(void)
 	struct gpiod_edge_event_buffer *evbuf = NULL;
 	int ret = EXIT_FAILURE;
 
+	if (argc > 2) {
+		fprintf(stderr, "usage: %s [logfile]\n", argv[0]);
+		return EXIT_FAILURE;
+	}
+	if (argc == 2)
+		log_path = argv[1];
+
 	if (install_signal_handlers() < 0)
 		return EXIT_FAILURE;
+
+	/*
+	 * Append so earlier runs are kept. 0600: the event log reveals when
+	 * someone is home, so only the owner may read it. The mode applies
+	 * only when the file is created; an existing file keeps its mode.
+	 */
+	log_fd = open(log_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC,
+		      0600);
+	if (log_fd < 0) {
+		fprintf(stderr, "sensortest: open %s: %s\n", log_path,
+			strerror(errno));
+		goto out;
+	}
 
 	chip = gpiod_chip_open(CHIP_PATH);
 	if (!chip) {
@@ -265,10 +367,11 @@ int main(void)
 		goto out;
 	}
 
-	printf("sensortest: watching %zu lines on %s. Ctrl+C to stop.\n",
-	       NUM_SENSORS, CHIP_PATH);
+	printf("sensortest: watching %zu lines on %s, logging to %s. "
+	       "Ctrl+C to stop.\n", NUM_SENSORS, CHIP_PATH, log_path);
 	/* Initial states, read after the request so no edge is missed. */
-	if (print_initial_states(req) < 0)
+	if (record_marker("start") < 0 || record_initial_states(req) < 0 ||
+	    sync_log() < 0)
 		goto out;
 
 	struct pollfd pfd = {
@@ -296,6 +399,8 @@ int main(void)
 	}
 
 	printf("sensortest: stop requested, releasing GPIO lines\n");
+	if (record_marker("stop") < 0 || sync_log() < 0)
+		goto out;
 	ret = EXIT_SUCCESS;
 
 out:
@@ -312,5 +417,7 @@ out:
 		gpiod_line_settings_free(settings);
 	if (chip)
 		gpiod_chip_close(chip);
+	if (log_fd >= 0)
+		close(log_fd); /* data was already fsync'd on success */
 	return ret;
 }

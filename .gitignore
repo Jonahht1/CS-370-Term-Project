@@ -2,3 +2,6 @@
 CS370-TermProject.pdf
 
 .DS_Store
+
+# Sensor event logs (private: record when people are home)
+events.log
