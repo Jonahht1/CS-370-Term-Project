@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project status
 
-CS 370 (Operating Systems, CSU) term project for a two-person team. The full spec is `CS370-TermProject.pdf`. Read it before making design decisions. **No code exists yet, and the device hasn't been chosen.** The team is still in ideation (M0/M1). Update this file when the device, sensors, mechanisms, build commands, and ownership map are decided. The spec requires this file to be checked in and kept current across milestones.
+CS 370 (Operating Systems, CSU) term project for a two-person team. The assignment spec is not in the repo; the team will provide relevant requirements as work proceeds. The device is a camera-free doorway monitor that distinguishes person-sized from pet-sized entries (see `PROBLEM.md`). Planned mechanisms are B (interrupt vs. polling) and E (multi-process + supervisor). Keep this file current as the design, commands, and ownership map evolve. The spec requires this file to be checked in and kept current across milestones.
 
 The deliverable is a Raspberry Pi device with at least two sensors, running software the team wrote, that solves a real problem for a specific, nameable user. The test the spec keeps applying is: "who wants this, and why doesn't a phone app already solve it?"
 
@@ -42,6 +42,33 @@ The deliverable is a Raspberry Pi device with at least two sensors, running soft
 - Raw soak logs
 - Per partner: `PROMPTLOG.md`, `REFLECTION.md`, and raw `.jsonl` transcripts copied out at every milestone M1–M5. Transcripts are purged after 30 days by default.
 
-## Commands / Architecture / Ownership
+## Hardware (Pi 5, `/dev/gpiochip0`)
+
+| Sensor | GPIO (pin) | Bias | Debounce | HIGH / LOW |
+|---|---|---|---|---|
+| `beam_lo` IR break-beam | 17 (11) | disabled | none | clear / blocked |
+| `beam_hi` IR break-beam | 22 (15) | disabled | none | clear / blocked |
+| `door` magnetic reed | 27 (13) | pull-up | 50 ms | open / closed |
+
+- The beams will be mounted stacked vertically (`beam_lo` below `beam_hi`; not physically mounted yet) to tell human-sized from pet-sized activity. They are **not** used for movement direction.
+- Beam receivers reach the GPIO through 100kΩ voltage dividers, so internal pulls must stay disabled. The reed switch only shorts to ground, so it needs the pull-up.
+- Beams are not debounced, because delaying edges would distort when both beams are blocked together.
+
+## Current code
+
+- `tools/beamtest/`: original single-beam test (GPIO17), kept as a reference.
+- `tools/sensortest/`: monitors all three sensors in one libgpiod v2 line request and prints timestamped edge events. Physically verified on the Pi.
+- Not implemented yet: persistent storage, classification, multi-process/IPC.
+
+Build and test (needs libgpiod v2 headers; `make test` needs the `gpiod` tools and runs on the Pi):
+
+```
+cd tools/sensortest
+make          # build ./sensortest (Ctrl+C to stop)
+make asan     # build ./sensortest-asan (ASan + UBSan)
+make test     # check applied bias/debounce via gpioinfo, require clean ASan exit
+```
+
+## Architecture / Ownership
 
 TBD. Fill in once the design is chosen. Appendix B of the spec suggests `make`, `make test`, `make asan`, `make memcheck`, `make soakcheck`, and `make deploy PI=pi@<host>`, with an ownership map by source directory.
