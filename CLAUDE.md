@@ -57,8 +57,8 @@ The deliverable is a Raspberry Pi device with at least two sensors, running soft
 ## Current code
 
 - `tools/beamtest/`: original single-beam test (GPIO17), kept as a reference.
-- `tools/sensortest/`: monitors all three sensors in one libgpiod v2 line request and prints timestamped edge events. Physically verified on the Pi.
-- Not implemented yet: persistent storage, classification, multi-process/IPC.
+- `tools/sensortest/`: monitors all three sensors in one libgpiod v2 line request, prints timestamped edge events, and appends them to a persistent log (`events.log` by default, gitignored; fsync'd after each batch). Physically verified on the Pi. Real sample lines for M3 are in `evidence/m3-sensor-events.log`.
+- Not implemented yet: polling comparison for Mechanism B, classification, multi-process/IPC.
 
 Build and test (needs libgpiod v2 headers; `make test` needs the `gpiod` tools and runs on the Pi):
 
@@ -66,7 +66,7 @@ Build and test (needs libgpiod v2 headers; `make test` needs the `gpiod` tools a
 cd tools/sensortest
 make          # build ./sensortest (Ctrl+C to stop)
 make asan     # build ./sensortest-asan (ASan + UBSan)
-make test     # check applied bias/debounce via gpioinfo, require clean ASan exit
+make test     # check applied bias/debounce via gpioinfo, clean ASan exit, and a complete session in a temp log
 ```
 
 ## Architecture / Ownership

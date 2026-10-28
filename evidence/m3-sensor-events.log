@@ -1,0 +1,43 @@
+# M3 evidence: real sensor events recorded by tools/sensortest/sensortest.c
+#
+# LIVE DATA, not replayed or synthetic. These lines were written by
+# sensortest on the Raspberry Pi 5 from the physical sensors during a
+# bench test on 2026-10-27 (sensors wired but not yet mounted in a
+# doorway). Everything below this header is an unedited, byte-for-byte
+# copy of tools/sensortest/events.log as of 2026-10-28 (two complete
+# start/stop sessions). The real events.log stays gitignored.
+#
+#   Session 1: edges on the reed switch (door, GPIO27).
+#   Session 2: edges on beam_hi (GPIO22), then on beam_lo (GPIO17).
+#
+# Columns: wall-clock time the event was processed, [mono] kernel
+# CLOCK_MONOTONIC edge timestamp, sensor, GPIO, edge type, new state.
+#
+2026-10-27 10:56:51.338 sensortest start
+2026-10-27 10:56:51.338 [mono 9070.093389966] beam_lo (GPIO17) initial blocked
+2026-10-27 10:56:51.338 [mono 9070.093389966] beam_hi (GPIO22) initial blocked
+2026-10-27 10:56:51.338 [mono 9070.093389966] door    (GPIO27) initial open
+2026-10-27 10:57:00.876 [mono 9079.632016000] door    (GPIO27) falling closed
+2026-10-27 10:57:02.512 [mono 9081.268012034] door    (GPIO27) rising  open
+2026-10-27 10:57:03.284 [mono 9082.040012973] door    (GPIO27) falling closed
+2026-10-27 10:57:07.188 [mono 9085.944013655] door    (GPIO27) rising  open
+2026-10-27 10:57:09.141 sensortest stop
+2026-10-27 10:58:26.558 sensortest start
+2026-10-27 10:58:26.558 [mono 9165.313327605] beam_lo (GPIO17) initial blocked
+2026-10-27 10:58:26.558 [mono 9165.313327605] beam_hi (GPIO22) initial blocked
+2026-10-27 10:58:26.558 [mono 9165.313327605] door    (GPIO27) initial open
+2026-10-27 10:58:32.679 [mono 9171.434885543] beam_hi (GPIO22) rising  clear
+2026-10-27 10:58:38.635 [mono 9177.390525230] beam_hi (GPIO22) falling blocked
+2026-10-27 10:58:39.655 [mono 9178.410888761] beam_hi (GPIO22) rising  clear
+2026-10-27 10:58:41.842 [mono 9180.597440416] beam_hi (GPIO22) falling blocked
+2026-10-27 10:58:43.787 [mono 9182.542454306] beam_hi (GPIO22) rising  clear
+2026-10-27 10:58:43.826 [mono 9182.582048602] beam_hi (GPIO22) falling blocked
+2026-10-27 10:58:45.027 [mono 9183.782377358] beam_hi (GPIO22) rising  clear
+2026-10-27 10:58:45.129 [mono 9183.884174241] beam_hi (GPIO22) falling blocked
+2026-10-27 10:58:48.980 [mono 9187.736081135] beam_lo (GPIO17) rising  clear
+2026-10-27 10:58:50.738 [mono 9189.493500436] beam_lo (GPIO17) falling blocked
+2026-10-27 10:58:52.167 [mono 9190.922181746] beam_lo (GPIO17) rising  clear
+2026-10-27 10:58:56.004 [mono 9194.759513832] beam_lo (GPIO17) falling blocked
+2026-10-27 10:58:57.432 [mono 9196.187151283] beam_lo (GPIO17) rising  clear
+2026-10-27 10:58:58.365 [mono 9197.120252809] beam_lo (GPIO17) falling blocked
+2026-10-27 10:59:02.331 sensortest stop
