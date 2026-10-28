@@ -3,10 +3,12 @@
 #
 # Starts the ASan build, checks that the kernel applied each line's
 # bias and debounce, then stops it with SIGINT and requires a clean,
-# leak-free exit. Does not need anyone to touch the sensors.
+# leak-free exit and a complete session in the log. Logs to a temp file,
+# never to the real events.log. Does not need anyone to touch the sensors.
 set -u
 
 out=$(mktemp)
+log=$(mktemp)
 fail=0
 
 # check <gpio> <text gpioinfo must show for that line>
@@ -20,7 +22,7 @@ check() {
 	fi
 }
 
-./sensortest-asan >"$out" 2>&1 &
+./sensortest-asan "$log" >"$out" 2>&1 &
 pid=$!
 sleep 1
 
@@ -39,6 +41,20 @@ else
 	fail=1
 fi
 
+# log_check <expected count> <pattern> <description>
+log_check() {
+	if [ "$(grep -c -- "$2" "$log")" -eq "$1" ]; then
+		echo "ok   log has $3"
+	else
+		echo "FAIL log should have $3"
+		fail=1
+	fi
+}
+
+log_check 1 ' sensortest start$' 'start marker'
+log_check 3 ' initial ' '3 initial sensor states'
+log_check 1 ' sensortest stop$' 'stop marker'
+
 # A nonzero exit here also catches ASan/LeakSanitizer reports.
 if [ "$status" -eq 0 ]; then
 	echo "ok   clean exit after SIGINT"
@@ -50,6 +66,8 @@ fi
 if [ "$fail" -ne 0 ]; then
 	echo "--- sensortest output ---"
 	cat "$out"
+	echo "--- log file ---"
+	cat "$log"
 fi
-rm -f "$out"
+rm -f "$out" "$log"
 exit "$fail"
