@@ -1,2 +1,4 @@
 sensortest
 sensortest-asan
+polltest.log
+edgetest.log

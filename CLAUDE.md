@@ -57,8 +57,11 @@ The deliverable is a Raspberry Pi device with at least two sensors, running soft
 ## Current code
 
 - `tools/beamtest/`: original single-beam test (GPIO17), kept as a reference.
-- `tools/sensortest/`: monitors all three sensors in one libgpiod v2 line request, prints timestamped edge events, and appends them to a persistent log (`events.log` by default, gitignored; fsync'd after each batch). Physically verified on the Pi. Real sample lines for M3 are in `evidence/m3-sensor-events.log`.
-- Not implemented yet: polling comparison for Mechanism B, classification, multi-process/IPC.
+- `tools/sensortest/`: monitors all three sensors in one libgpiod v2 line request and appends timestamped state changes to a persistent log (`events.log` by default, gitignored; fsync'd after each batch). Two input modes for Mechanism B:
+  - default, edge events: kernel edge detection and timestamps, 50 ms kernel debounce on the door.
+  - `-p [-i ms]`, polling: no edge detection; reads the levels every 1–10000 ms (default 10) and logs only changes, tagged `polled`. Timestamps are when a change was observed, not when it happened. Short changes between samples can be missed. The door uses a 50 ms software debounce, so its timestamps include the confirmation wait. Each session's `mode` line in the log records the mode and interval.
+- Both modes passed basic live manual bench tests on the Pi (all three sensors, clean Ctrl+C stop): `evidence/mechb-bench-tests-2026-11-15.md`. These are not accuracy or latency measurements. Real sample lines for M3 are in `evidence/m3-sensor-events.log`.
+- Not done yet: the CPU and latency comparison between the two modes, quantitative debounce testing, classification, multi-process/IPC with a supervisor, and the 48-hour soak.
 
 Build and test (needs libgpiod v2 headers; `make test` needs the `gpiod` tools and runs on the Pi):
 
@@ -66,9 +69,11 @@ Build and test (needs libgpiod v2 headers; `make test` needs the `gpiod` tools a
 cd tools/sensortest
 make          # build ./sensortest (Ctrl+C to stop)
 make asan     # build ./sensortest-asan (ASan + UBSan)
-make test     # check applied bias/debounce via gpioinfo, clean ASan exit, and a complete session in a temp log
+make test     # reject bad options; for edge and polling modes, check applied line settings via gpioinfo, clean ASan exit, and a complete session in a temp log
+./sensortest [logfile]               # edge-event mode
+./sensortest -p [-i ms] [logfile]    # polling mode
 ```
 
 ## Architecture / Ownership
 
-TBD. Fill in once the design is chosen. Appendix B of the spec suggests `make`, `make test`, `make asan`, `make memcheck`, `make soakcheck`, and `make deploy PI=pi@<host>`, with an ownership map by source directory.
+TBD. Fill in once the design is chosen. A proposed, not final, split is in `DESIGN.md` section 7. Appendix B of the spec suggests `make`, `make test`, `make asan`, `make memcheck`, `make soakcheck`, and `make deploy PI=pi@<host>`, with an ownership map by source directory.

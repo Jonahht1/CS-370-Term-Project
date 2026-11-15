@@ -1,0 +1,30 @@
+2026-11-15 14:03:58.084 sensortest start
+2026-11-15 14:03:58.084 sensortest mode polling interval=10ms (times are when a change was observed)
+2026-11-15 14:03:58.084 [mono 6093.583408401] beam_lo (GPIO17) initial blocked
+2026-11-15 14:03:58.084 [mono 6093.583408401] beam_hi (GPIO22) initial blocked
+2026-11-15 14:03:58.084 [mono 6093.583408401] door    (GPIO27) initial open
+2026-11-15 14:04:31.762 [mono 6127.261467588] beam_hi (GPIO22) polled  clear
+2026-11-15 14:04:31.932 [mono 6127.431474128] beam_hi (GPIO22) polled  blocked
+2026-11-15 14:04:32.102 [mono 6127.601479280] beam_hi (GPIO22) polled  clear
+2026-11-15 14:04:35.712 [mono 6131.211473683] beam_hi (GPIO22) polled  blocked
+2026-11-15 14:04:35.742 [mono 6131.241472705] beam_hi (GPIO22) polled  clear
+2026-11-15 14:04:39.432 [mono 6134.931472191] beam_hi (GPIO22) polled  blocked
+2026-11-15 14:04:40.452 [mono 6135.951472135] beam_hi (GPIO22) polled  clear
+2026-11-15 14:04:42.012 [mono 6137.511469961] beam_hi (GPIO22) polled  blocked
+2026-11-15 14:04:43.702 [mono 6139.201467681] beam_hi (GPIO22) polled  clear
+2026-11-15 14:04:52.792 [mono 6148.291467514] beam_lo (GPIO17) polled  clear
+2026-11-15 14:04:54.322 [mono 6149.821467957] beam_lo (GPIO17) polled  blocked
+2026-11-15 14:04:55.212 [mono 6150.711467627] beam_lo (GPIO17) polled  clear
+2026-11-15 14:04:55.702 [mono 6151.201467846] beam_lo (GPIO17) polled  blocked
+2026-11-15 14:04:56.452 [mono 6151.951467684] beam_lo (GPIO17) polled  clear
+2026-11-15 14:04:56.812 [mono 6152.311467994] beam_lo (GPIO17) polled  blocked
+2026-11-15 14:04:59.482 [mono 6154.981467606] beam_lo (GPIO17) polled  clear
+2026-11-15 14:04:59.532 [mono 6155.031467467] beam_lo (GPIO17) polled  blocked
+2026-11-15 14:05:01.522 [mono 6157.021467481] beam_hi (GPIO22) polled  blocked
+2026-11-15 14:05:01.642 [mono 6157.141467906] beam_hi (GPIO22) polled  clear
+2026-11-15 14:05:09.842 [mono 6165.341467327] door    (GPIO27) polled  closed
+2026-11-15 14:05:11.462 [mono 6166.961468957] door    (GPIO27) polled  open
+2026-11-15 14:05:12.082 [mono 6167.581473247] door    (GPIO27) polled  closed
+2026-11-15 14:05:12.872 [mono 6168.371467135] door    (GPIO27) polled  open
+2026-11-15 14:05:13.372 [mono 6168.871467485] beam_hi (GPIO22) polled  blocked
+2026-11-15 14:05:14.397 sensortest stop
