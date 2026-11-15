@@ -45,7 +45,7 @@ Our software is written in C17 and uses libgpiod v2 to receive rising and fallin
 
 Right now, one process and one thread handle all three sensors. The program prints each event to the terminal and appends it to `events.log`. Each line has a timestamp, the sensor name, the GPIO number, and the new state. The log also records the starting state of each sensor and when the program starts and stops.
 
-**Current status:** All three sensors have been tested working together, and their events are being recorded to `events.log`. Human vs. pet classification, process isolation, and automatic recovery are planned but not implemented yet.
+**Current status:** All three sensors have been tested working together, and their events are being recorded to `events.log`. The program now also has an optional polling mode (`-p`, see Mechanism B). Human vs. pet classification, process isolation, automatic recovery, and the 48-hour soak test are planned but not done yet.
 
 ## 2. Operating System Mechanisms
 
@@ -59,7 +59,7 @@ The C program uses libgpiod to configure the GPIO pins and receive rising and fa
 
 This mechanism is useful because our sensors only need attention when their states change. Checking them continuously would use more CPU than needed, and checking too slowly could miss short interruptions.
 
-**Status:** Edge-event monitoring is implemented and tested for all three sensors. We still need to write a polling version and compare the two approaches using event latency and CPU usage measurements.
+**Status:** Edge-event monitoring is implemented and tested for all three sensors. A polling version is now implemented as an option in the same program (`sensortest -p [-i ms]`, default interval 10 ms). It requests no edge detection, reads the sensor levels at each interval, and logs only changes. Polling timestamps show when a change was observed, not when it happened, and changes shorter than the interval can be missed. Because kernel debounce only applies to edges, polling mode uses a 50 ms software debounce for the door, so door timestamps also include that confirmation wait. Both modes passed basic live manual bench tests with all three sensors (`evidence/mechb-bench-tests-2026-11-15.md`). Those tests were not accuracy or latency measurements. We still need to compare the two approaches by measuring CPU usage and event latency, and to test the debounce behavior quantitatively.
 
 ### Mechanism E: Multi-Process Architecture (Planned)
 
