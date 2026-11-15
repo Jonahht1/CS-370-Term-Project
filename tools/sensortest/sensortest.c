@@ -16,7 +16,22 @@
  * with an error rather than keep running without saving events. All
  * lines are inputs; no line is ever configured as an output.
  *
- * Usage: sensortest [logfile]
+ * Two input modes, for the Mechanism B comparison:
+ *   default  edge events: the kernel detects and timestamps each edge,
+ *            and poll() sleeps until one arrives.
+ *   -p       polling: no edge detection is requested; the levels are
+ *            read every -i milliseconds (default 10) and only changes are
+ *            logged, tagged "polled". A change that reverts before the
+ *            next sample is never seen. A polled timestamp is when the
+ *            change was observed, not when it happened; the gap includes
+ *            waiting for the next sample plus any scheduling or logging
+ *            delay, so it has no fixed bound, and for the door it also
+ *            includes software debounce confirmation (see watch_polling).
+ *            The log's mode line records which mode and interval produced
+ *            each session. This mode alone does not measure detection
+ *            latency.
+ *
+ * Usage: sensortest [-p [-i ms]] [logfile]
  * Stop with Ctrl+C (SIGINT) or SIGTERM; all resources are released.
  * `make test` checks the applied line settings and a clean ASan exit.
  */
@@ -41,6 +56,8 @@
 #define POLL_MS     500               /* max wait before re-checking stop flag */
 #define DEFAULT_LOG "events.log"      /* relative to the current directory */
 #define LOG_LINE    256               /* max bytes in one formatted line */
+#define DEFAULT_POLL_INTERVAL_MS 10   /* -p without -i */
+#define MAX_POLL_INTERVAL_MS 10000    /* slower would miss most doorway events */
 
 struct sensor {
 	const char *name;
@@ -207,10 +224,11 @@ static int install_signal_handlers(void)
 /*
  * Add every sensor in the table to line_cfg. One settings object is
  * reused: add_line_settings copies it, so changing the bias afterwards
- * does not affect lines already added.
+ * does not affect lines already added. Kernel debounce filters edges, so
+ * it is only requested in edge mode; polling debounces in watch_polling.
  */
 static int add_sensor_lines(struct gpiod_line_config *line_cfg,
-			    struct gpiod_line_settings *settings)
+			    struct gpiod_line_settings *settings, int edges)
 {
 	for (size_t i = 0; i < NUM_SENSORS; i++) {
 		const struct sensor *s = &sensors[i];
@@ -220,7 +238,7 @@ static int add_sensor_lines(struct gpiod_line_config *line_cfg,
 			return -1;
 		}
 		gpiod_line_settings_set_debounce_period_us(settings,
-							   s->debounce_us);
+							   edges ? s->debounce_us : 0);
 		if (gpiod_line_config_add_line_settings(line_cfg, &s->offset, 1,
 							settings)) {
 			perror("gpiod_line_config_add_line_settings");
@@ -261,8 +279,12 @@ static int drain_events(struct gpiod_line_request *req,
 	return sync_log(); /* one fsync per batch, not per line */
 }
 
-/* Record the current level of every sensor. Returns 0 or -1 on error. */
-static int record_initial_states(struct gpiod_line_request *req)
+/*
+ * Record the current level of every sensor and store it in levels[]
+ * (1 = HIGH), indexed like sensors[]. Returns 0 or -1 on error.
+ */
+static int record_initial_states(struct gpiod_line_request *req,
+				 int levels[])
 {
 	uint64_t now = mono_now_ns();
 
@@ -275,11 +297,126 @@ static int record_initial_states(struct gpiod_line_request *req)
 			perror("gpiod_line_request_get_value");
 			return -1;
 		}
-		if (record_state(s, "initial", now,
-				 val == GPIOD_LINE_VALUE_ACTIVE) < 0)
+		levels[i] = val == GPIOD_LINE_VALUE_ACTIVE;
+		if (record_state(s, "initial", now, levels[i]) < 0)
 			return -1;
 	}
 	return 0;
+}
+
+/*
+ * Polling mode: every interval_ms, read all sensor levels in one call and
+ * record each one that differs from levels[] (the last recorded levels,
+ * updated here). The timestamp is the sample time, i.e. when the change
+ * was observed, not when it physically happened. A change that reverts
+ * between two samples is missed, and a late wakeup (scheduling, or a slow
+ * write or fsync of the previous sample) delays the next observation.
+ *
+ * Debounce: kernel debounce is not requested in this mode (see
+ * add_sensor_lines). Instead a sensor with debounce_us set (the door)
+ * must read its new level on every sample for at least that long before
+ * the change is recorded; one sample back at the old level cancels it.
+ * Its recorded time is therefore when the change was confirmed, at least
+ * one debounce period after it was first observed.
+ *
+ * Returns 0 when a stop is requested, -1 on error.
+ */
+static int watch_polling(struct gpiod_line_request *req, int levels[],
+			 long interval_ms)
+{
+	unsigned int offsets[NUM_SENSORS];
+	enum gpiod_line_value vals[NUM_SENSORS];
+	int pending[NUM_SENSORS] = { 0 };          /* new level seen, not stable yet */
+	uint64_t pending_since[NUM_SENSORS] = { 0 };
+	uint64_t interval_ns = (uint64_t)interval_ms * 1000000ull;
+	uint64_t next = mono_now_ns();
+
+	for (size_t i = 0; i < NUM_SENSORS; i++)
+		offsets[i] = sensors[i].offset;
+
+	while (!stop_requested) {
+		uint64_t now = mono_now_ns();
+		int changed = 0;
+
+		/* Fixed-rate deadlines; if we fell behind, sample right away. */
+		next += interval_ns;
+		if (next < now)
+			next = now;
+		struct timespec ts = {
+			.tv_sec = (time_t)(next / 1000000000ull),
+			.tv_nsec = (long)(next % 1000000000ull),
+		};
+		int err = clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts,
+					  NULL);
+
+		if (err == EINTR)
+			continue; /* signal: loop re-checks the flag */
+		if (err) {
+			fprintf(stderr, "clock_nanosleep: %s\n", strerror(err));
+			return -1;
+		}
+
+		if (gpiod_line_request_get_values_subset(req, NUM_SENSORS,
+							 offsets, vals) < 0) {
+			perror("gpiod_line_request_get_values_subset");
+			return -1;
+		}
+		now = mono_now_ns();
+
+		for (size_t i = 0; i < NUM_SENSORS; i++) {
+			const struct sensor *s = &sensors[i];
+			int high = vals[i] == GPIOD_LINE_VALUE_ACTIVE;
+
+			if (high == levels[i]) {
+				pending[i] = 0; /* unchanged, or bounced back */
+				continue;
+			}
+			if (s->debounce_us > 0) {
+				if (!pending[i]) {
+					pending[i] = 1;
+					pending_since[i] = now;
+					continue;
+				}
+				if (now - pending_since[i] <
+				    (uint64_t)s->debounce_us * 1000ull)
+					continue; /* not stable long enough */
+			}
+			pending[i] = 0;
+			levels[i] = high;
+			if (record_state(s, "polled", now, high) < 0)
+				return -1;
+			changed = 1;
+		}
+		if (changed && sync_log() < 0)
+			return -1;
+	}
+	return 0;
+}
+
+/* Parse a -i value: a whole number of ms in 1..MAX. Returns it or -1. */
+static long parse_interval_ms(const char *arg)
+{
+	char *end;
+	long ms;
+
+	errno = 0;
+	ms = strtol(arg, &end, 10);
+	if (errno != 0 || end == arg || *end != '\0' || ms < 1 ||
+	    ms > MAX_POLL_INTERVAL_MS)
+		return -1;
+	return ms;
+}
+
+static void usage(const char *prog)
+{
+	fprintf(stderr,
+		"usage: %s [-p [-i ms]] [logfile]\n"
+		"  (default)  wait for GPIO edge events\n"
+		"  -p         poll GPIO levels instead of using edge events\n"
+		"  -i ms      polling interval, 1-%d ms (default %d; needs -p)\n"
+		"  logfile    append events here (default %s)\n",
+		prog, MAX_POLL_INTERVAL_MS, DEFAULT_POLL_INTERVAL_MS,
+		DEFAULT_LOG);
 }
 
 int main(int argc, char **argv)
@@ -290,14 +427,46 @@ int main(int argc, char **argv)
 	struct gpiod_request_config *req_cfg = NULL;
 	struct gpiod_line_request *req = NULL;
 	struct gpiod_edge_event_buffer *evbuf = NULL;
+	int levels[NUM_SENSORS];
+	int polling = 0;
+	int interval_given = 0;
+	long interval_ms = DEFAULT_POLL_INTERVAL_MS;
+	char mode_line[96];
+	int opt;
 	int ret = EXIT_FAILURE;
 
-	if (argc > 2) {
-		fprintf(stderr, "usage: %s [logfile]\n", argv[0]);
+	/* Parse everything before opening the log, so bad usage creates nothing. */
+	while ((opt = getopt(argc, argv, "pi:")) != -1) {
+		switch (opt) {
+		case 'p':
+			polling = 1;
+			break;
+		case 'i':
+			interval_ms = parse_interval_ms(optarg);
+			if (interval_ms < 0) {
+				fprintf(stderr, "%s: -i needs a whole number "
+					"of ms from 1 to %d, got '%s'\n",
+					argv[0], MAX_POLL_INTERVAL_MS, optarg);
+				return EXIT_FAILURE;
+			}
+			interval_given = 1;
+			break;
+		default: /* getopt already printed what was wrong */
+			usage(argv[0]);
+			return EXIT_FAILURE;
+		}
+	}
+	if (interval_given && !polling) {
+		fprintf(stderr, "%s: -i only applies with -p\n", argv[0]);
+		usage(argv[0]);
 		return EXIT_FAILURE;
 	}
-	if (argc == 2)
-		log_path = argv[1];
+	if (argc - optind > 1) {
+		usage(argv[0]);
+		return EXIT_FAILURE;
+	}
+	if (argc - optind == 1)
+		log_path = argv[optind];
 
 	if (install_signal_handlers() < 0)
 		return EXIT_FAILURE;
@@ -322,8 +491,10 @@ int main(int argc, char **argv)
 	}
 
 	/*
-	 * Settings shared by every line: input, both edges, monotonic
-	 * timestamps. Bias and debounce are set per sensor in add_sensor_lines.
+	 * Settings shared by every line: input, and in edge mode both edges
+	 * with monotonic timestamps. Polling requests no edge detection, so
+	 * the kernel generates no edge events for it. Bias and debounce are
+	 * set per sensor in add_sensor_lines.
 	 */
 	settings = gpiod_line_settings_new();
 	if (!settings) {
@@ -331,11 +502,15 @@ int main(int argc, char **argv)
 		goto out;
 	}
 	if (gpiod_line_settings_set_direction(settings,
-					      GPIOD_LINE_DIRECTION_INPUT) ||
-	    gpiod_line_settings_set_edge_detection(settings,
-						   GPIOD_LINE_EDGE_BOTH) ||
-	    gpiod_line_settings_set_event_clock(settings,
-						GPIOD_LINE_CLOCK_MONOTONIC)) {
+					      GPIOD_LINE_DIRECTION_INPUT)) {
+		perror("gpiod_line_settings_set_direction");
+		goto out;
+	}
+	if (!polling &&
+	    (gpiod_line_settings_set_edge_detection(settings,
+						    GPIOD_LINE_EDGE_BOTH) ||
+	     gpiod_line_settings_set_event_clock(settings,
+						 GPIOD_LINE_CLOCK_MONOTONIC))) {
 		perror("gpiod_line_settings_set_*");
 		goto out;
 	}
@@ -345,7 +520,7 @@ int main(int argc, char **argv)
 		perror("gpiod_line_config_new");
 		goto out;
 	}
-	if (add_sensor_lines(line_cfg, settings) < 0)
+	if (add_sensor_lines(line_cfg, settings, !polling) < 0)
 		goto out;
 
 	req_cfg = gpiod_request_config_new();
@@ -361,41 +536,60 @@ int main(int argc, char **argv)
 		goto out;
 	}
 
-	evbuf = gpiod_edge_event_buffer_new(EVENT_BUF);
-	if (!evbuf) {
-		perror("gpiod_edge_event_buffer_new");
+	if (polling)
+		snprintf(mode_line, sizeof(mode_line),
+			 "mode polling interval=%ldms "
+			 "(times are when a change was observed)", interval_ms);
+	else
+		snprintf(mode_line, sizeof(mode_line), "mode edge-events");
+
+	printf("sensortest: watching %zu lines on %s (%s), logging to %s. "
+	       "Ctrl+C to stop.\n", NUM_SENSORS, CHIP_PATH,
+	       polling ? "polling" : "edge events", log_path);
+	/*
+	 * Initial states are read after the request. In edge mode, a change
+	 * after the request is also queued as an edge event (unless the
+	 * kernel's event queue overflows), so the gap between the request
+	 * and this read does not hide it. Polling has no such guarantee: it
+	 * only sees the levels present at each sample.
+	 */
+	if (record_marker("start") < 0 || record_marker(mode_line) < 0 ||
+	    record_initial_states(req, levels) < 0 || sync_log() < 0)
 		goto out;
-	}
 
-	printf("sensortest: watching %zu lines on %s, logging to %s. "
-	       "Ctrl+C to stop.\n", NUM_SENSORS, CHIP_PATH, log_path);
-	/* Initial states, read after the request so no edge is missed. */
-	if (record_marker("start") < 0 || record_initial_states(req) < 0 ||
-	    sync_log() < 0)
-		goto out;
-
-	struct pollfd pfd = {
-		.fd = gpiod_line_request_get_fd(req),
-		.events = POLLIN,
-	};
-
-	while (!stop_requested) {
-		int pr = poll(&pfd, 1, POLL_MS);
-
-		if (pr < 0) {
-			if (errno == EINTR)
-				continue; /* signal: loop re-checks the flag */
-			perror("poll");
+	if (polling) {
+		if (watch_polling(req, levels, interval_ms) < 0)
+			goto out;
+	} else {
+		evbuf = gpiod_edge_event_buffer_new(EVENT_BUF);
+		if (!evbuf) {
+			perror("gpiod_edge_event_buffer_new");
 			goto out;
 		}
-		if (pr == 0)
-			continue; /* timeout, nothing happened */
-		if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
-			fprintf(stderr, "poll: error on line request fd\n");
-			goto out;
+
+		struct pollfd pfd = {
+			.fd = gpiod_line_request_get_fd(req),
+			.events = POLLIN,
+		};
+
+		while (!stop_requested) {
+			int pr = poll(&pfd, 1, POLL_MS);
+
+			if (pr < 0) {
+				if (errno == EINTR)
+					continue; /* signal: loop re-checks the flag */
+				perror("poll");
+				goto out;
+			}
+			if (pr == 0)
+				continue; /* timeout, nothing happened */
+			if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+				fprintf(stderr, "poll: error on line request fd\n");
+				goto out;
+			}
+			if (drain_events(req, evbuf) < 0)
+				goto out;
 		}
-		if (drain_events(req, evbuf) < 0)
-			goto out;
 	}
 
 	printf("sensortest: stop requested, releasing GPIO lines\n");
